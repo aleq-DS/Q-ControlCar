@@ -1,122 +1,210 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState } from "react";
+import "./App.css";
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [devices, setDevices] = useState([]);
+  const [selectedMac, setSelectedMac] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [statusMsg, setStatusMsg] = useState("Aguardando conexão Bluetooth");
+  const [lastCommand, setLastCommand] = useState("-");
+
+  const getBluetoothSerial = () => {
+    if (typeof window !== "undefined" && window.bluetoothSerial) {
+      return window.bluetoothSerial;
+    }
+    return null;
+  };
+
+  const listPairedDevices = () => {
+    const bt = getBluetoothSerial();
+    if (!bt) {
+      setStatusMsg("Modo navegador: Bluetooth nativo disponível apenas no Android/APK.");
+      return;
+    }
+
+    setStatusMsg("Buscando dispositivos pareados...");
+    bt.list(
+      (pairedList) => {
+        setDevices(pairedList || []);
+        if (pairedList && pairedList.length > 0) {
+          setSelectedMac((prev) => prev || pairedList[0].address || pairedList[0].id || "");
+          setStatusMsg(`Encontrados ${pairedList.length} dispositivo(s) pareado(s).`);
+        } else {
+          setStatusMsg("Nenhum dispositivo pareado. Pareie o HC-06 nas configurações do Android.");
+        }
+      },
+      (err) => {
+        setStatusMsg(`Erro ao listar dispositivos: ${err}`);
+      }
+    );
+  };
+
+  useEffect(() => {
+    const onDeviceReady = () => {
+      listPairedDevices();
+    };
+
+    document.addEventListener("deviceready", onDeviceReady, false);
+
+    // Facilita testar no navegador desktop
+    if (!window.cordova) {
+      listPairedDevices();
+    }
+
+    return () => {
+      document.removeEventListener("deviceready", onDeviceReady, false);
+    };
+  }, []);
+
+  const handleConnect = () => {
+    const bt = getBluetoothSerial();
+    if (!selectedMac) {
+      setStatusMsg("Selecione um dispositivo (ex.: HC-06) antes de conectar.");
+      return;
+    }
+
+    if (!bt) {
+      setConnected((prev) => !prev);
+      setStatusMsg("Simulação de conexão alternada no navegador.");
+      return;
+    }
+
+    setStatusMsg(`Conectando a ${selectedMac}...`);
+    bt.connect(
+      selectedMac,
+      () => {
+        setConnected(true);
+        setStatusMsg(`Conectado ao dispositivo (${selectedMac})`);
+      },
+      (err) => {
+        setConnected(false);
+        setStatusMsg(`Falha na conexão: ${err}`);
+      }
+    );
+  };
+
+  const handleDisconnect = () => {
+    const bt = getBluetoothSerial();
+    if (!bt) {
+      setConnected(false);
+      setStatusMsg("Desconectado (modo navegador).");
+      return;
+    }
+
+    bt.disconnect(
+      () => {
+        setConnected(false);
+        setStatusMsg("Desconectado do Bluetooth.");
+      },
+      (err) => {
+        setStatusMsg(`Erro ao desconectar: ${err}`);
+      }
+    );
+  };
+
+  const sendCommand = (cmd) => {
+    setLastCommand(cmd);
+    const bt = getBluetoothSerial();
+
+    if (!bt) {
+      console.log(`[SIMULACAO BT] Comando enviado: ${cmd}`);
+      return;
+    }
+
+    bt.write(
+      cmd,
+      () => {},
+      (err) => {
+        setStatusMsg(`Erro ao enviar '${cmd}': ${err}`);
+      }
+    );
+  };
+
+  const bindControlEvents = (cmd) => ({
+    onTouchStart: (e) => {
+      e.preventDefault();
+      sendCommand(cmd);
+    },
+    onTouchEnd: (e) => {
+      e.preventDefault();
+      sendCommand("s");
+    },
+    onMouseDown: () => sendCommand(cmd),
+    onMouseUp: () => sendCommand("s"),
+  });
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <main className="app-container">
+      <h1>Q-ControlCar</h1>
+      <p className="status-text">{statusMsg}</p>
+
+      <section className="bt-panel">
+        <div className="bt-row">
+          <select
+            value={selectedMac}
+            onChange={(e) => setSelectedMac(e.target.value)}
+            disabled={connected}
+          >
+            <option value="">Selecione o HC-06 pareado...</option>
+            {devices.map((dev, idx) => {
+              const addr = dev.address || dev.id || "";
+              const label = dev.name ? `${dev.name} (${addr})` : addr;
+              return (
+                <option key={`${addr}-${idx}`} value={addr}>
+                  {label}
+                </option>
+              );
+            })}
+          </select>
+
+          <button type="button" onClick={listPairedDevices} disabled={connected}>
+            Atualizar
+          </button>
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
+
+        <div className="bt-row">
+          {!connected ? (
+            <button type="button" onClick={handleConnect}>
+              Conectar
+            </button>
+          ) : (
+            <button type="button" onClick={handleDisconnect}>
+              Desconectar
+            </button>
+          )}
+          <span className="cmd-badge">Último cmd: <strong>{lastCommand}</strong></span>
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
+      </section>
+
+      <section className="controls-grid">
+        <button type="button" {...bindControlEvents("I")}>
+          ↖ Curva Esq (I)
         </button>
+        <button type="button" {...bindControlEvents("F")}>
+          ⬆️ Frente (F)
+        </button>
+        <button type="button" {...bindControlEvents("G")}>
+          ↗ Curva Dir (G)
+        </button>
+
+        <button type="button" {...bindControlEvents("L")}>
+          ⬅️ Giro Esq (L)
+        </button>
+        <button type="button" className="btn-stop" onClick={() => sendCommand("s")}>
+          ⏹️ Parar (s)
+        </button>
+        <button type="button" {...bindControlEvents("R")}>
+          ➡️ Giro Dir (R)
+        </button>
+
+        <div className="spacer" />
+        <button type="button" {...bindControlEvents("B")}>
+          ⬇️ Ré (B)
+        </button>
+        <div className="spacer" />
       </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+    </main>
+  );
 }
 
-export default App
+export default App;

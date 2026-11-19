@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Q-ControlCar</string>
+    <string name="title_activity_main">Q-ControlCar</string>
+    <string name="package_name">com.qcontrolcar.app</string>
+    <string name="custom_url_scheme">com.qcontrolcar.app</string>
+</resources>
