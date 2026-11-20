@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
 function App() {
@@ -7,6 +7,10 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [statusMsg, setStatusMsg] = useState("Aguardando conexão Bluetooth");
   const [lastCommand, setLastCommand] = useState("-");
+  const [activeKeys, setActiveKeys] = useState([]);
+
+  const pressedSetRef = useRef(new Set());
+  const lastSentRef = useRef("");
 
   const getBluetoothSerial = () => {
     if (typeof window !== "undefined" && window.bluetoothSerial) {
@@ -18,7 +22,7 @@ function App() {
   const listPairedDevices = () => {
     const bt = getBluetoothSerial();
     if (!bt) {
-      setStatusMsg("Modo navegador: Bluetooth nativo disponível apenas no Android/APK.");
+      setStatusMsg("Modo navegador: simulação ativa.");
       return;
     }
 
@@ -28,25 +32,21 @@ function App() {
         setDevices(pairedList || []);
         if (pairedList && pairedList.length > 0) {
           setSelectedMac((prev) => prev || pairedList[0].address || pairedList[0].id || "");
-          setStatusMsg(`Encontrados ${pairedList.length} dispositivo(s) pareado(s).`);
+          setStatusMsg(`${pairedList.length} dispositivo(s) pareado(s).`);
         } else {
-          setStatusMsg("Nenhum dispositivo pareado. Pareie o HC-06 nas configurações do Android.");
+          setStatusMsg("Nenhum dispositivo pareado encontrado.");
         }
       },
       (err) => {
-        setStatusMsg(`Erro ao listar dispositivos: ${err}`);
+        setStatusMsg(`Erro ao listar: ${err}`);
       }
     );
   };
 
   useEffect(() => {
-    const onDeviceReady = () => {
-      listPairedDevices();
-    };
-
+    const onDeviceReady = () => listPairedDevices();
     document.addEventListener("deviceready", onDeviceReady, false);
 
-    // Facilita testar no navegador desktop
     if (!window.cordova) {
       listPairedDevices();
     }
@@ -56,53 +56,7 @@ function App() {
     };
   }, []);
 
-  const handleConnect = () => {
-    const bt = getBluetoothSerial();
-    if (!selectedMac) {
-      setStatusMsg("Selecione um dispositivo (ex.: HC-06) antes de conectar.");
-      return;
-    }
-
-    if (!bt) {
-      setConnected((prev) => !prev);
-      setStatusMsg("Simulação de conexão alternada no navegador.");
-      return;
-    }
-
-    setStatusMsg(`Conectando a ${selectedMac}...`);
-    bt.connect(
-      selectedMac,
-      () => {
-        setConnected(true);
-        setStatusMsg(`Conectado ao dispositivo (${selectedMac})`);
-      },
-      (err) => {
-        setConnected(false);
-        setStatusMsg(`Falha na conexão: ${err}`);
-      }
-    );
-  };
-
-  const handleDisconnect = () => {
-    const bt = getBluetoothSerial();
-    if (!bt) {
-      setConnected(false);
-      setStatusMsg("Desconectado (modo navegador).");
-      return;
-    }
-
-    bt.disconnect(
-      () => {
-        setConnected(false);
-        setStatusMsg("Desconectado do Bluetooth.");
-      },
-      (err) => {
-        setStatusMsg(`Erro ao desconectar: ${err}`);
-      }
-    );
-  };
-
-  const sendCommand = (cmd) => {
+  const writeRawCommand = (cmd) => {
     setLastCommand(cmd);
     const bt = getBluetoothSerial();
 
@@ -120,32 +74,152 @@ function App() {
     );
   };
 
-  const bindControlEvents = (cmd) => ({
-    onTouchStart: (e) => {
+  // Resolve combinação de teclas pressionadas (F, B, L, R)
+  const resolveCommandFromSet = (pressed) => {
+    const hasF = pressed.has("F");
+    const hasB = pressed.has("B");
+    const hasR = pressed.has("R");
+    const hasL = pressed.has("L");
+
+    if (hasF && hasR) return "G"; // Curva suave frente + direita
+    if (hasF && hasL) return "I"; // Curva suave frente + esquerda
+    if (hasB && hasR) return "H"; // Curva suave ré + direita
+    if (hasB && hasL) return "J"; // Curva suave ré + esquerda
+
+    if (hasF) return "F";
+    if (hasB) return "B";
+    if (hasR) return "R";
+    if (hasL) return "L";
+
+    return "s";
+  };
+
+  const syncPressedState = () => {
+    const currentSet = pressedSetRef.current;
+    setActiveKeys(Array.from(currentSet));
+
+    const nextCmd = resolveCommandFromSet(currentSet);
+    if (nextCmd !== lastSentRef.current) {
+      lastSentRef.current = nextCmd;
+      writeRawCommand(nextCmd);
+    }
+  };
+
+  const handlePressKey = (key) => {
+    pressedSetRef.current.add(key);
+    syncPressedState();
+  };
+
+  const handleReleaseKey = (key) => {
+    pressedSetRef.current.delete(key);
+    syncPressedState();
+  };
+
+  const handleEmergencyStop = () => {
+    pressedSetRef.current.clear();
+    setActiveKeys([]);
+    lastSentRef.current = "s";
+    writeRawCommand("s");
+  };
+
+  const bindPadButton = (key) => ({
+    onPointerDown: (e) => {
       e.preventDefault();
-      sendCommand(cmd);
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignora caso não suportado no ambiente
+      }
+      handlePressKey(key);
     },
-    onTouchEnd: (e) => {
+    onPointerUp: (e) => {
       e.preventDefault();
-      sendCommand("s");
+      handleReleaseKey(key);
     },
-    onMouseDown: () => sendCommand(cmd),
-    onMouseUp: () => sendCommand("s"),
+    onPointerCancel: (e) => {
+      e.preventDefault();
+      handleReleaseKey(key);
+    },
   });
 
-  return (
-    <main className="app-container">
-      <h1>Q-ControlCar</h1>
-      <p className="status-text">{statusMsg}</p>
+  const handleConnect = () => {
+    const bt = getBluetoothSerial();
+    if (!selectedMac) {
+      setStatusMsg("Selecione o HC-06 pareado.");
+      return;
+    }
 
-      <section className="bt-panel">
-        <div className="bt-row">
+    if (!bt) {
+      setConnected((prev) => !prev);
+      setStatusMsg("Simulação de conexão alternada.");
+      return;
+    }
+
+    setStatusMsg(`Conectando a ${selectedMac}...`);
+    bt.connect(
+      selectedMac,
+      () => {
+        setConnected(true);
+        setStatusMsg(`Conectado a ${selectedMac}`);
+      },
+      (err) => {
+        setConnected(false);
+        setStatusMsg(`Falha: ${err}`);
+      }
+    );
+  };
+
+  const handleDisconnect = () => {
+    handleEmergencyStop();
+    const bt = getBluetoothSerial();
+    if (!bt) {
+      setConnected(false);
+      setStatusMsg("Desconectado (simulação).");
+      return;
+    }
+
+    bt.disconnect(
+      () => {
+        setConnected(false);
+        setStatusMsg("Desconectado.");
+      },
+      (err) => {
+        setStatusMsg(`Erro ao desconectar: ${err}`);
+      }
+    );
+  };
+
+  const isActive = (key) => activeKeys.includes(key);
+
+  return (
+    <div className="gamepad-wrapper">
+      <div className="gamepad-shell">
+        <header className="gamepad-header">
+          <div className="brand-block">
+            <h1>Q-ControlCar</h1>
+            <span className={`led-pill ${connected ? "led-on" : "led-off"}`}>
+              {connected ? "HC-06 ONLINE" : "HC-06 OFF"}
+            </span>
+          </div>
+
+          <div className="telemetry-box">
+            <span>
+              Ativos: <strong>{activeKeys.length ? activeKeys.join(" + ") : "nenhum"}</strong>
+            </span>
+            <span>
+              TX: <strong className="tx-code">{lastCommand}</strong>
+            </span>
+          </div>
+        </header>
+
+        <section className="bt-bar">
           <select
+            className="bt-select"
             value={selectedMac}
             onChange={(e) => setSelectedMac(e.target.value)}
             disabled={connected}
           >
-            <option value="">Selecione o HC-06 pareado...</option>
+            <option value="">Selecione o HC-06...</option>
             {devices.map((dev, idx) => {
               const addr = dev.address || dev.id || "";
               const label = dev.name ? `${dev.name} (${addr})` : addr;
@@ -157,53 +231,100 @@ function App() {
             })}
           </select>
 
-          <button type="button" onClick={listPairedDevices} disabled={connected}>
-            Atualizar
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={listPairedDevices}
+            disabled={connected}
+          >
+            Buscar
           </button>
-        </div>
 
-        <div className="bt-row">
           {!connected ? (
-            <button type="button" onClick={handleConnect}>
+            <button type="button" className="btn-connect" onClick={handleConnect}>
               Conectar
             </button>
           ) : (
-            <button type="button" onClick={handleDisconnect}>
-              Desconectar
+            <button type="button" className="btn-disconnect" onClick={handleDisconnect}>
+              Sair
             </button>
           )}
-          <span className="cmd-badge">Último cmd: <strong>{lastCommand}</strong></span>
-        </div>
-      </section>
+        </section>
 
-      <section className="controls-grid">
-        <button type="button" {...bindControlEvents("I")}>
-          ↖ Curva Esq (I)
-        </button>
-        <button type="button" {...bindControlEvents("F")}>
-          ⬆️ Frente (F)
-        </button>
-        <button type="button" {...bindControlEvents("G")}>
-          ↗ Curva Dir (G)
-        </button>
+        <p className="status-bar">{statusMsg}</p>
 
-        <button type="button" {...bindControlEvents("L")}>
-          ⬅️ Giro Esq (L)
-        </button>
-        <button type="button" className="btn-stop" onClick={() => sendCommand("s")}>
-          ⏹️ Parar (s)
-        </button>
-        <button type="button" {...bindControlEvents("R")}>
-          ➡️ Giro Dir (R)
-        </button>
+        <main className="controller-deck">
+          <div className="dpad-cluster">
+            <button
+              type="button"
+              className={`pad-btn pad-up ${isActive("F") ? "is-pressed" : ""}`}
+              {...bindPadButton("F")}
+            >
+              <span className="arrow">▲</span>
+              <span className="code-tag">F</span>
+            </button>
 
-        <div className="spacer" />
-        <button type="button" {...bindControlEvents("B")}>
-          ⬇️ Ré (B)
-        </button>
-        <div className="spacer" />
-      </section>
-    </main>
+            <button
+              type="button"
+              className={`pad-btn pad-left ${isActive("L") ? "is-pressed" : ""}`}
+              {...bindPadButton("L")}
+            >
+              <span className="arrow">◀</span>
+              <span className="code-tag">L</span>
+            </button>
+
+            <button
+              type="button"
+              className="pad-btn pad-center"
+              onClick={handleEmergencyStop}
+              title="Parar motores"
+            >
+              <span>STOP</span>
+              <span className="code-tag">s</span>
+            </button>
+
+            <button
+              type="button"
+              className={`pad-btn pad-right ${isActive("R") ? "is-pressed" : ""}`}
+              {...bindPadButton("R")}
+            >
+              <span className="arrow">▶</span>
+              <span className="code-tag">R</span>
+            </button>
+
+            <button
+              type="button"
+              className={`pad-btn pad-down ${isActive("B") ? "is-pressed" : ""}`}
+              {...bindPadButton("B")}
+            >
+              <span className="arrow">▼</span>
+              <span className="code-tag">B</span>
+            </button>
+          </div>
+
+          <aside className="combo-legend">
+            <h2>Curvas por Combinação</h2>
+            <ul>
+              <li>
+                <kbd>F</kbd> + <kbd>R</kbd> → <strong>G</strong> (Curva Dir.)
+              </li>
+              <li>
+                <kbd>F</kbd> + <kbd>L</kbd> → <strong>I</strong> (Curva Esq.)
+              </li>
+              <li>
+                <kbd>B</kbd> + <kbd>R</kbd> → <strong>H</strong> (Ré Dir.)
+              </li>
+              <li>
+                <kbd>B</kbd> + <kbd>L</kbd> → <strong>J</strong> (Ré Esq.)
+              </li>
+            </ul>
+            <p className="hint-text">
+              Segure dois botões juntos para fazer curva suave; solte para parar (<strong>s</strong>).
+            </p>
+          </aside>
+        </main>
+      </div>
+    </div>
   );
 }
 
