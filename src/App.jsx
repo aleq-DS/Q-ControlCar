@@ -26,21 +26,23 @@ function App() {
       return;
     }
 
-    setStatusMsg("Buscando dispositivos pareados...");
-    bt.list(
-      (pairedList) => {
-        setDevices(pairedList || []);
-        if (pairedList && pairedList.length > 0) {
-          setSelectedMac((prev) => prev || pairedList[0].address || pairedList[0].id || "");
-          setStatusMsg(`${pairedList.length} dispositivo(s) pareado(s).`);
-        } else {
-          setStatusMsg("Nenhum dispositivo pareado encontrado.");
+    requestConnectPermission(() => {
+      setStatusMsg("Buscando dispositivos pareados...");
+      bt.list(
+        (pairedList) => {
+          setDevices(pairedList || []);
+          if (pairedList && pairedList.length > 0) {
+            setSelectedMac((prev) => prev || pairedList[0].address || pairedList[0].id || "");
+            setStatusMsg(`${pairedList.length} dispositivo(s) pareado(s).`);
+          } else {
+            setStatusMsg("Nenhum dispositivo pareado encontrado. Pareie o HC-06 no Bluetooth do celular.");
+          }
+        },
+        (err) => {
+          setStatusMsg(`Erro ao listar: ${err}`);
         }
-      },
-      (err) => {
-        setStatusMsg(`Erro ao listar: ${err}`);
-      }
-    );
+      );
+    });
   };
 
   useEffect(() => {
@@ -141,6 +143,29 @@ function App() {
       handleReleaseKey(key);
     },
   });
+
+  const requestConnectPermission = (onGranted) => {
+    const bt = getBluetoothSerial();
+    if (!bt) {
+      onGranted();
+      return;
+    }
+
+    if (typeof bt.requestPermission === "function") {
+      bt.requestPermission(
+        () => {
+          onGranted();
+        },
+        (err) => {
+          setStatusMsg(
+            `Permissão BLUETOOTH_CONNECT não concedida (${err}). Ative em: Ajustes > Apps > Q-ControlCar > Permissões > Dispositivos próximos.`
+          );
+        }
+      );
+    } else {
+      onGranted();
+    }
+  };
 
   const handleConnect = () => {
     const bt = getBluetoothSerial();
