@@ -1,22 +1,48 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
+import appLogo from "./assets/favicon.ico";
 
 function App() {
   const [devices, setDevices] = useState([]);
   const [selectedMac, setSelectedMac] = useState("");
   const [connected, setConnected] = useState(false);
   const [statusMsg, setStatusMsg] = useState("Aguardando conexão Bluetooth");
-  const [lastCommand, setLastCommand] = useState("-");
+  const [lastCommand, setLastCommand] = useState("s");
   const [activeKeys, setActiveKeys] = useState([]);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const pressedSetRef = useRef(new Set());
-  const lastSentRef = useRef("");
+  const lastSentRef = useRef("s");
+  const touchStartXRef = useRef(null);
 
   const getBluetoothSerial = () => {
     if (typeof window !== "undefined" && window.bluetoothSerial) {
       return window.bluetoothSerial;
     }
     return null;
+  };
+
+  const requestConnectPermission = (onGranted) => {
+    const bt = getBluetoothSerial();
+    if (!bt) {
+      onGranted();
+      return;
+    }
+
+    if (typeof bt.requestPermission === "function") {
+      bt.requestPermission(
+        () => {
+          onGranted();
+        },
+        (err) => {
+          setStatusMsg(
+            `Permissão BLUETOOTH_CONNECT não concedida (${err}). Ative em: Ajustes > Apps > Q-ControlCar > Permissões > Dispositivos próximos.`
+          );
+        }
+      );
+    } else {
+      onGranted();
+    }
   };
 
   const listPairedDevices = () => {
@@ -39,7 +65,15 @@ function App() {
           }
         },
         (err) => {
-          setStatusMsg(`Erro ao listar: ${err}`);
+          const msg = String(err || "");
+          if (msg.includes("BLUETOOTH_CONNECT") && typeof bt.requestPermission === "function") {
+            bt.requestPermission(
+              () => listPairedDevices(),
+              (permErr) => setStatusMsg(`Permissão BLUETOOTH_CONNECT negada: ${permErr}`)
+            );
+            return;
+          }
+          setStatusMsg(`Erro ao listar: ${msg}`);
         }
       );
     });
@@ -97,6 +131,8 @@ function App() {
   };
 
   const syncPressedState = () => {
+    if (!connected) return;
+
     const currentSet = pressedSetRef.current;
     setActiveKeys(Array.from(currentSet));
 
@@ -108,11 +144,13 @@ function App() {
   };
 
   const handlePressKey = (key) => {
+    if (!connected) return;
     pressedSetRef.current.add(key);
     syncPressedState();
   };
 
   const handleReleaseKey = (key) => {
+    if (!connected) return;
     pressedSetRef.current.delete(key);
     syncPressedState();
   };
@@ -121,12 +159,27 @@ function App() {
     pressedSetRef.current.clear();
     setActiveKeys([]);
     lastSentRef.current = "s";
-    writeRawCommand("s");
+    setLastCommand("s");
+
+    const bt = getBluetoothSerial();
+    if (!bt) {
+      console.log("[SIMULACAO BT] Comando enviado: s");
+      return;
+    }
+
+    if (connected) {
+      bt.write(
+        "s",
+        () => {},
+        (err) => setStatusMsg(`Erro ao enviar 's': ${err}`)
+      );
+    }
   };
 
   const bindPadButton = (key) => ({
     onPointerDown: (e) => {
       e.preventDefault();
+      if (!connected) return;
       try {
         e.currentTarget.setPointerCapture(e.pointerId);
       } catch {
@@ -144,29 +197,6 @@ function App() {
     },
   });
 
-  const requestConnectPermission = (onGranted) => {
-    const bt = getBluetoothSerial();
-    if (!bt) {
-      onGranted();
-      return;
-    }
-
-    if (typeof bt.requestPermission === "function") {
-      bt.requestPermission(
-        () => {
-          onGranted();
-        },
-        (err) => {
-          setStatusMsg(
-            `Permissão BLUETOOTH_CONNECT não concedida (${err}). Ative em: Ajustes > Apps > Q-ControlCar > Permissões > Dispositivos próximos.`
-          );
-        }
-      );
-    } else {
-      onGranted();
-    }
-  };
-
   const handleConnect = () => {
     const bt = getBluetoothSerial();
     if (!selectedMac) {
@@ -175,27 +205,47 @@ function App() {
     }
 
     if (!bt) {
-      setConnected((prev) => !prev);
+      setConnected((prev) => {
+        const next = !prev;
+        if (!next) {
+          pressedSetRef.current.clear();
+          setActiveKeys([]);
+          lastSentRef.current = "s";
+          setLastCommand("s");
+        }
+        return next;
+      });
       setStatusMsg("Simulação de conexão alternada.");
       return;
     }
 
-    setStatusMsg(`Conectando a ${selectedMac}...`);
-    bt.connect(
-      selectedMac,
-      () => {
-        setConnected(true);
-        setStatusMsg(`Conectado a ${selectedMac}`);
-      },
-      (err) => {
-        setConnected(false);
-        setStatusMsg(`Falha: ${err}`);
-      }
-    );
+    requestConnectPermission(() => {
+      setStatusMsg(`Conectando a ${selectedMac}...`);
+      bt.connect(
+        selectedMac,
+        () => {
+          setConnected(true);
+          pressedSetRef.current.clear();
+          setActiveKeys([]);
+          lastSentRef.current = "s";
+          setLastCommand("s");
+          setStatusMsg(`Conectado a ${selectedMac}`);
+          setMenuOpen(false);
+        },
+        (err) => {
+          setConnected(false);
+          setStatusMsg(`Falha: ${err}`);
+        }
+      );
+    });
   };
 
   const handleDisconnect = () => {
-    handleEmergencyStop();
+    pressedSetRef.current.clear();
+    setActiveKeys([]);
+    lastSentRef.current = "s";
+    setLastCommand("s");
+
     const bt = getBluetoothSerial();
     if (!bt) {
       setConnected(false);
@@ -214,28 +264,70 @@ function App() {
     );
   };
 
-  const isActive = (key) => activeKeys.includes(key);
+  const handleWrapperTouchStart = (e) => {
+    if (menuOpen) return;
+    const x = e.touches?.[0]?.clientX ?? 0;
+    if (x <= 28) {
+      touchStartXRef.current = x;
+    } else {
+      touchStartXRef.current = null;
+    }
+  };
+
+  const handleWrapperTouchMove = (e) => {
+    if (touchStartXRef.current === null || menuOpen) return;
+    const currentX = e.touches?.[0]?.clientX ?? 0;
+    if (currentX - touchStartXRef.current >= 55) {
+      setMenuOpen(true);
+      touchStartXRef.current = null;
+    }
+  };
+
+  const handleWrapperTouchEnd = () => {
+    touchStartXRef.current = null;
+  };
+
+  const isActive = (key) => connected && activeKeys.includes(key);
+
+  const dirLabels = {
+    F: "Frente",
+    B: "Ré",
+    L: "Esquerda",
+    R: "Direita",
+  };
+
+  const activeDirectionText = !connected
+    ? "Parado"
+    : activeKeys.length === 0
+      ? "Parado"
+      : activeKeys.map((k) => dirLabels[k] || k).join(" + ");
+
+  const displayedTx = !connected ? "s" : lastCommand;
 
   return (
-    <div className="gamepad-wrapper">
-      <div className="gamepad-shell">
-        <header className="gamepad-header">
-          <div className="brand-block">
-            <h1>Q-ControlCar</h1>
-            <span className={`led-pill ${connected ? "led-on" : "led-off"}`}>
-              {connected ? "HC-06 ONLINE" : "HC-06 OFF"}
-            </span>
-          </div>
+    <div
+      className="gamepad-wrapper"
+      onTouchStart={handleWrapperTouchStart}
+      onTouchMove={handleWrapperTouchMove}
+      onTouchEnd={handleWrapperTouchEnd}
+    >
+      <div
+        className={`drawer-backdrop ${menuOpen ? "is-open" : ""}`}
+        onClick={() => setMenuOpen(false)}
+      />
 
-          <div className="telemetry-box">
-            <span>
-              Ativos: <strong>{activeKeys.length ? activeKeys.join(" + ") : "nenhum"}</strong>
-            </span>
-            <span>
-              TX: <strong className="tx-code">{lastCommand}</strong>
-            </span>
-          </div>
-        </header>
+      <aside className={`side-drawer ${menuOpen ? "is-open" : ""}`} aria-hidden={!menuOpen}>
+        <div className="drawer-header">
+          <h2>Conexão</h2>
+          <button
+            type="button"
+            className="drawer-close"
+            onClick={() => setMenuOpen(false)}
+            aria-label="Fechar menu"
+          >
+            ✕
+          </button>
+        </div>
 
         <section className="bt-bar">
           <select
@@ -256,33 +348,92 @@ function App() {
             })}
           </select>
 
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={listPairedDevices}
-            disabled={connected}
-          >
-            Buscar
-          </button>
+          <div className="bt-actions">
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={listPairedDevices}
+              disabled={connected}
+            >
+              Buscar
+            </button>
 
-          {!connected ? (
-            <button type="button" className="btn-connect" onClick={handleConnect}>
-              Conectar
-            </button>
-          ) : (
-            <button type="button" className="btn-disconnect" onClick={handleDisconnect}>
-              Sair
-            </button>
-          )}
+            {!connected ? (
+              <button type="button" className="btn-connect" onClick={handleConnect}>
+                Conectar
+              </button>
+            ) : (
+              <button type="button" className="btn-disconnect" onClick={handleDisconnect}>
+                Sair
+              </button>
+            )}
+          </div>
         </section>
 
         <p className="status-bar">{statusMsg}</p>
+        <p>------------------------------------------</p>
+        <h2>Mapeamento de teclas</h2>
 
-        <main className="controller-deck">
+        <aside className="combo-legend">
+          <h3>Combinação e curvas</h3>
+          <ul>
+            <li>
+              <kbd>F</kbd> + <kbd>R</kbd> → <strong>G</strong> (Curva Dir.)
+            </li>
+            <li>
+              <kbd>F</kbd> + <kbd>L</kbd> → <strong>I</strong> (Curva Esq.)
+            </li>
+            <li>
+              <kbd>B</kbd> + <kbd>R</kbd> → <strong>H</strong> (Ré Dir.)
+            </li>
+            <li>
+              <kbd>B</kbd> + <kbd>L</kbd> → <strong>J</strong> (Ré Esq.)
+            </li>
+          </ul>
+          <p className="hint-text">
+            Segure dois botões juntos para fazer curva suave; solte para parar (<strong>s</strong>).
+          </p>
+        </aside>
+      </aside>
+
+      <main className="gamepad-shell">
+        <header className="top-bar">
+          <button
+            type="button"
+            className="menu-trigger"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Abrir menu lateral"
+          >
+            ☰
+          </button>
+
+          <div className="brand-center">
+            <img src={appLogo} alt="Q-ControlCar" className="app-logo-mini" />
+          </div>
+
+          <span className={`led-pill ${connected ? "led-on" : "led-off"}`}>
+            {connected ? "VEÍCULO ON" : "VEÍCULO OFF"}
+          </span>
+
+          <span aria-hidden="true" />
+        </header>
+
+        <div className="status-telemetry-row">
+          <div className={`telemetry-subtle ${!connected ? "is-frozen" : ""}`}>
+            <span>{activeDirectionText}</span>
+            <span>•</span>
+            <span>
+              TX: <strong className="tx-code">{displayedTx}</strong>
+            </span>
+          </div>
+        </div>
+
+        <section className="controller-deck">
           <div className="dpad-cluster">
             <button
               type="button"
               className={`pad-btn pad-up ${isActive("F") ? "is-pressed" : ""}`}
+              disabled={!connected}
               {...bindPadButton("F")}
             >
               <span className="arrow">▲</span>
@@ -292,6 +443,7 @@ function App() {
             <button
               type="button"
               className={`pad-btn pad-left ${isActive("L") ? "is-pressed" : ""}`}
+              disabled={!connected}
               {...bindPadButton("L")}
             >
               <span className="arrow">◀</span>
@@ -301,6 +453,7 @@ function App() {
             <button
               type="button"
               className="pad-btn pad-center"
+              disabled={!connected}
               onClick={handleEmergencyStop}
               title="Parar motores"
             >
@@ -311,6 +464,7 @@ function App() {
             <button
               type="button"
               className={`pad-btn pad-right ${isActive("R") ? "is-pressed" : ""}`}
+              disabled={!connected}
               {...bindPadButton("R")}
             >
               <span className="arrow">▶</span>
@@ -320,35 +474,15 @@ function App() {
             <button
               type="button"
               className={`pad-btn pad-down ${isActive("B") ? "is-pressed" : ""}`}
+              disabled={!connected}
               {...bindPadButton("B")}
             >
               <span className="arrow">▼</span>
               <span className="code-tag">B</span>
             </button>
           </div>
-
-          <aside className="combo-legend">
-            <h2>Curvas por Combinação</h2>
-            <ul>
-              <li>
-                <kbd>F</kbd> + <kbd>R</kbd> → <strong>G</strong> (Curva Dir.)
-              </li>
-              <li>
-                <kbd>F</kbd> + <kbd>L</kbd> → <strong>I</strong> (Curva Esq.)
-              </li>
-              <li>
-                <kbd>B</kbd> + <kbd>R</kbd> → <strong>H</strong> (Ré Dir.)
-              </li>
-              <li>
-                <kbd>B</kbd> + <kbd>L</kbd> → <strong>J</strong> (Ré Esq.)
-              </li>
-            </ul>
-            <p className="hint-text">
-              Segure dois botões juntos para fazer curva suave; solte para parar (<strong>s</strong>).
-            </p>
-          </aside>
-        </main>
-      </div>
+        </section>
+      </main>
     </div>
   );
 }
